@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==========================================================
 # update.sh
-# Version: 1.0
+# Version: 1.1
 # Usage:
 #   ./update.sh -s /chemin/source [-e /chemin/export] [-t images|videos|both] [--touch]
 #
@@ -205,7 +205,22 @@ while IFS= read -r -d '' json; do
         continue
     fi
 
-    # write metadata with exiftool (images vs videos)
+    # ----- Géolocalisation -----
+    lat=$(jq -r '.geoData.latitude // empty' "$json")
+    lon=$(jq -r '.geoData.longitude // empty' "$json")
+    alt=$(jq -r '.geoData.altitude // empty' "$json")
+    gps_opts=()
+    if [ -n "$lat" ] && [ -n "$lon" ]; then
+        # Latitude Ref
+        if (( $(echo "$lat >= 0" | bc -l) )); then lat_ref="N"; else lat_ref="S"; lat=$(echo "-1*$lat" | bc); fi
+        # Longitude Ref
+        if (( $(echo "$lon >= 0" | bc -l) )); then lon_ref="E"; else lon_ref="W"; lon=$(echo "-1*$lon" | bc); fi
+        gps_opts+=("-GPSLatitude=$lat" "-GPSLatitudeRef=$lat_ref")
+        gps_opts+=("-GPSLongitude=$lon" "-GPSLongitudeRef=$lon_ref")
+    fi
+    [ -n "$alt" ] && gps_opts+=("-GPSAltitude=$alt")
+
+    # ----- Mise à jour des métadonnées -----
     if [ "$is_video" = true ]; then
         echo "🛠️ (video) $(basename "$target_img") → $formatted"
         exiftool -overwrite_original \
@@ -216,6 +231,7 @@ while IFS= read -r -d '' json; do
             "-QuickTime:CreateDate=$formatted" \
             "-XMP:CreateDate=$formatted" \
             "-UserComment=Updated from Google JSON" \
+            "${gps_opts[@]}" \
             "$target_img" >/dev/null 2>&1 || echo "⚠️ exiftool failed for $(basename "$target_img")"
     elif [ "$is_image" = true ]; then
         echo "🛠️ (image) $(basename "$target_img") → $formatted"
@@ -224,26 +240,26 @@ while IFS= read -r -d '' json; do
             "-CreateDate=$formatted" \
             "-ModifyDate=$formatted" \
             "-UserComment=Updated from Google JSON" \
+            "${gps_opts[@]}" \
             "$target_img" >/dev/null 2>&1 || echo "⚠️ exiftool failed for $(basename "$target_img")"
     else
-        # extension inconnue -> traiter comme image par défaut si targets both
         echo "⚠️ Extension non reconnue pour $(basename "$target_img"), skipped"
         count_skipped=$((count_skipped+1))
         continue
     fi
 
 # ----- mise à jour des timestamps fichiers (mtime/atime), et creation sur macOS si possible -----
-if [ "$DO_TOUCH" = true ]; then
+    if [ "$DO_TOUCH" = true ]; then
     # format touch: [[CC]YY]MMDDhhmm[.SS]
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        touch_ts=$(date -u -r "$ts" +"%Y%m%d%H%M.%S")
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            touch_ts=$(date -u -r "$ts" +"%Y%m%d%H%M.%S")
         # pour SetFile (creation date) on veut "MM/DD/YYYY HH:MM:SS"
-        setfile_date=$(date -u -r "$ts" +"%m/%d/%Y %H:%M:%S")
-    else
-        touch_ts=$(date -u -d @"$ts" +"%Y%m%d%H%M.%S")
+            setfile_date=$(date -u -r "$ts" +"%m/%d/%Y %H:%M:%S")
+        else
+            touch_ts=$(date -u -d @"$ts" +"%Y%m%d%H%M.%S")
         # SetFile n'existe pas sur Linux normalement
-        setfile_date=""
-    fi
+            setfile_date=""
+        fi
 
     # applique mtime/atime
     if touch -t "$touch_ts" "$target_img"; then
